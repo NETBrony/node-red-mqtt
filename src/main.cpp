@@ -14,9 +14,9 @@ const int delay_ms = 500;
 const unsigned long interval_sensor = 10000;
 unsigned long previousMillis = 0;
 
-// === [ส่วนที่เพิ่ม] ตัวแปรสำหรับเช็คหลอดไฟตลอดเวลา ===
+// ตัวแปรสำหรับเช็คหลอดไฟตลอดเวลา
 unsigned long lastLightCheck = 0;
-const unsigned long lightCheckInterval = 1000; // เช็คทุกๆ 1 วินาที
+const unsigned long lightCheckInterval = 1000; 
 
 //===== SHT30 =====
 #define SHT31_ADDRESS 0x44
@@ -34,11 +34,10 @@ unsigned long debounceDelay = 50;
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// ฟังก์ชันเช็คกระแส (เหมือนเดิม)
+// ฟังก์ชันเช็คกระแส (Low-side Sensing)
 bool isLightReallyOn() {
   int sensorValue = analogRead(feedbackPin);
-  // Serial.print("[Monitor] Sensor: "); 
-  // Serial.println(sensorValue); // เปิดคอมเมนต์ถ้าอยากดูค่ารัวๆ
+  // Serial.print("[Monitor] Sensor: "); Serial.println(sensorValue); 
   if (sensorValue > 30) { 
     return true; 
   } else {
@@ -46,7 +45,7 @@ bool isLightReallyOn() {
   }
 }
 
-// ฟังก์ชันส่งสถานะ (แยกออกมาเพื่อเรียกใช้ได้หลายที่)
+// ฟังก์ชันส่งสถานะ MQTT
 void sendLightStatus(String status) {
   if (status == "1") {
     client.publish("sensor/light_status", "1");
@@ -71,7 +70,6 @@ void callback(char *topic, byte *payload, unsigned int length)
       lightState = HIGH;
       delay(100); 
       
-      // เช็คครั้งแรกตอนสั่งเปิด
       if (isLightReallyOn()) {
         Serial.println("Command ON: Success");
         sendLightStatus("1");
@@ -100,7 +98,10 @@ void readSensor() {
     char msgBuffer[100];
     jsonString.toCharArray(msgBuffer, 100);
     client.publish("sensor/TempHumi", msgBuffer);
+    Serial.print("Published SHT30: "); // คืนค่า Debug
     Serial.println(msgBuffer);
+  } else {
+    Serial.println("Error: Can't read SHT30 sensor!"); // คืนค่า Debug
   }
 }
 
@@ -114,21 +115,40 @@ void ledStandby() {
   digitalWrite(led, HIGH); delay(delay_ms); digitalWrite(led, LOW); delay(delay_ms);
 }
 
+// === [กู้คืน] Debug Message WiFi ===
 void setup_wifi() {
   delay(10);
+  Serial.print("\n[WiFi] Connecting to: "); // คืนค่า
+  Serial.println(ssid);                     // คืนค่า
+
   WiFi.begin(ssid, pass);
+
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500); ledStandby();
+    delay(500); 
+    Serial.print("."); // คืนค่า (จุดไข่ปลา)
+    ledStandby();
   }
+  
+  Serial.println("\nWiFi Connected! :]");   // คืนค่า
+  Serial.print("IP address: ");             // คืนค่า
+  Serial.println(WiFi.localIP());           // คืนค่า
   digitalWrite(led, HIGH);
 }
 
+// === [กู้คืน] Debug Message MQTT ===
 void reconnect() {
   while (!client.connected()) {
+    Serial.print("Attempting MQTT connection..."); // คืนค่า
     String clientId = "ESP32Client-" + String(random(0xffff), HEX);
+    
     if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
+      Serial.println("connected");  // คืนค่า
       client.subscribe(topic_light); 
+      Serial.println("Subscribed to: test/light"); // คืนค่า
     } else {
+      Serial.print("failed, rc=");  // คืนค่า
+      Serial.print(client.state()); // คืนค่า
+      Serial.println(" try again in 5 seconds"); // คืนค่า
       delay(5000);
     }
   }
@@ -167,21 +187,17 @@ void switchPush() {
   lastButtonState = reading;
 }
 
-// === [ส่วนสำคัญ] ฟังก์ชันเฝ้าระวัง ===
+// ฟังก์ชันเฝ้าระวังหลอดขาด (ทำงานตลอดเวลา)
 void monitorLightHealth() {
-  // ทำงานเฉพาะตอนที่ระบบ "คิดว่าไฟเปิดอยู่" (lightState == HIGH)
   if (lightState == HIGH) {
-    // ถ้าตรวจแล้วพบว่า "ไฟดับจริง" (isLightReallyOn == false)
     if (!isLightReallyOn()) {
       Serial.println("ALERT: Light failure detected during operation!");
       
-      // 1. สั่งตัดระบบ Software ทันที
       lightState = LOW;
       digitalWrite(light, LOW);
       
-      // 2. แจ้งเตือนไปที่ Node-RED
       sendLightStatus("0");
-      client.publish("sensor/error", "Lost Connection"); // แจ้งว่าสายหลุด
+      client.publish("sensor/error", "Lost Connection"); 
     }
   }
 }
@@ -194,16 +210,28 @@ void setup() {
   pinMode(feedbackPin, INPUT);
   pinMode(switchPin, INPUT_PULLUP);
 
+  Serial.println("\nStarting System..."); // คืนค่า
+  delay(3000);
   ledStart(led, 2, 250);
+
   Wire.begin();
-  sht30.begin();
+  if (!sht30.begin()) {
+    Serial.println("Can't find SHT30 sensor!"); // คืนค่า
+  } else {
+    Serial.println("SHT30 Connected! :]\n");      // คืนค่า
+  }
+
   setup_wifi();
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) setup_wifi();
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi Disconnected! Reconnecting..."); // เพิ่มให้ด้วย
+    setup_wifi();
+  }
+  
   if (!client.connected()) reconnect();
   client.loop();
   
@@ -211,15 +239,13 @@ void loop() {
 
   unsigned long currentMillis = millis();
   
-  // 1. รอบอ่าน Sensor (ทุก 10 วิ)
   if (currentMillis - previousMillis >= interval_sensor) {
     previousMillis = currentMillis;
     readSensor();
   }
 
-  // 2. รอบตรวจสุขภาพหลอดไฟ (ทุก 1 วิ) [เพิ่มใหม่]
   if (currentMillis - lastLightCheck >= lightCheckInterval) {
     lastLightCheck = currentMillis;
-    monitorLightHealth(); // เรียกยามมาตรวจ
+    monitorLightHealth();
   }
 }
