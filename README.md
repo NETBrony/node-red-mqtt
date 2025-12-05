@@ -1,3 +1,3 @@
-This project making for learning about microcontroller, node-red and mqtt system
+This project making for learning about microcontroller with node-red and mqtt system
 
 Have Fun :]
