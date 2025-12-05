@@ -1,3 +1,3 @@
-This project making to learning about node-red and mqtt system
+This project making for learning about node-red and mqtt system
 
 Have Fun :]
