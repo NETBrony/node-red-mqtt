@@ -9,7 +9,6 @@
 #define light 19
 #define switchPin 17
 #define feedbackPin 34
-#define pump 15
 
 const int delay_ms = 500;
 const unsigned long interval_sensor = 10000;
@@ -208,7 +207,6 @@ void setup() {
   delay(100);
   pinMode(led, OUTPUT);
   pinMode(light, OUTPUT);
-  pinMode(pump, OUTPUT);
   pinMode(feedbackPin, INPUT);
   pinMode(switchPin, INPUT_PULLUP);
 
