@@ -115,6 +115,16 @@ void ledStandby() {
   digitalWrite(led, HIGH); delay(delay_ms); digitalWrite(led, LOW); delay(delay_ms);
 }
 
+void mqttPending(){
+  for(int i = 0; i < 2; i++){
+    digitalWrite(led, HIGH);
+    delay(100);
+    digitalWrite(led, LOW);
+    delay(100);
+  }
+  delay(2000);
+}
+
 // === [กู้คืน] Debug Message WiFi ===
 void setup_wifi() {
   delay(10);
@@ -143,12 +153,14 @@ void reconnect() {
     
     if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
       Serial.println("connected");  // คืนค่า
+      digitalWrite(led, HIGH);
       client.subscribe(topic_light); 
       Serial.println("Subscribed to: test/light"); // คืนค่า
     } else {
       Serial.print("failed, rc=");  // คืนค่า
       Serial.print(client.state()); // คืนค่า
       Serial.println(" try again in 5 seconds"); // คืนค่า
+      mqttPending();
       delay(5000);
     }
   }
@@ -211,8 +223,8 @@ void setup() {
   pinMode(switchPin, INPUT_PULLUP);
 
   Serial.println("\nStarting System..."); // คืนค่า
-  delay(3000);
   ledStart(led, 2, 250);
+  delay(3000);
 
   Wire.begin();
   if (!sht30.begin()) {
