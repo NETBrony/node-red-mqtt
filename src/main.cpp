@@ -134,9 +134,9 @@ void setup_wifi() {
   WiFi.begin(ssid, pass);
 
   while (WiFi.status() != WL_CONNECTED) {
+    ledStandby();
     delay(500); 
     Serial.print("."); // คืนค่า (จุดไข่ปลา)
-    ledStandby();
   }
   
   Serial.println("\nWiFi Connected! :]");   // คืนค่า
