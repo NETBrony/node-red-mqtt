@@ -37,7 +37,6 @@ PubSubClient client(espClient);
 // ฟังก์ชันเช็คกระแส (Low-side Sensing)
 bool isLightReallyOn() {
   int sensorValue = analogRead(feedbackPin);
-  // Serial.print("[Monitor] Sensor: "); Serial.println(sensorValue); 
   if (sensorValue > 30) { 
     return true; 
   } else {
@@ -55,6 +54,32 @@ void sendLightStatus(String status) {
   }
 }
 
+// === [NEW] ฟังก์ชันกลางสำหรับคุมไฟ (เพิ่มตรงนี้) ===
+void controlLight(bool turnOn) {
+  if (turnOn) {
+    digitalWrite(light, HIGH);
+    lightState = HIGH;
+    delay(150); // รอ Relay และ Feedback ทำงาน
+
+    if (isLightReallyOn()) {
+      Serial.println("Action: ON Success");
+      sendLightStatus("1");
+    } else {
+      Serial.println("Action: ON Failed (Check Bulb)");
+      digitalWrite(light, LOW);
+      lightState = LOW;
+      sendLightStatus("0");
+      client.publish("sensor/error", "Start Fail");
+    }
+  } else {
+    digitalWrite(light, LOW);
+    lightState = LOW;
+    Serial.println("Action: OFF");
+    sendLightStatus("0");
+  }
+}
+// ===============================================
+
 void callback(char *topic, byte *payload, unsigned int length)
 {
   Serial.print("Message arrived [");
@@ -65,27 +90,12 @@ void callback(char *topic, byte *payload, unsigned int length)
   Serial.println(message);
 
   if (String(topic) == "test/light") {
+    // เรียกใช้ฟังก์ชันกลาง ลดความซ้ำซ้อน
     if (message == "1") {
-      digitalWrite(light, HIGH);
-      lightState = HIGH;
-      delay(100); 
-      
-      if (isLightReallyOn()) {
-        Serial.println("Command ON: Success");
-        sendLightStatus("1");
-      } else {
-        Serial.println("Command ON: Failed (Bulb Broken)");
-        digitalWrite(light, LOW);
-        lightState = LOW;
-        sendLightStatus("0");
-        client.publish("sensor/error", "Start Fail");
-      }
+      controlLight(true);
     }
     else if (message == "0") {
-      digitalWrite(light, LOW);
-      lightState = LOW;
-      Serial.println("Command OFF");
-      sendLightStatus("0");
+      controlLight(false);
     }
   }
 }
@@ -94,14 +104,16 @@ void readSensor() {
   if (sht30.read()) {
     temperature = sht30.getTemperature();
     humidity = sht30.getHumidity();
-    String jsonString = "{\"temp\":" + String(temperature) + ",\"humi\":" + String(humidity) + "}";
-    char msgBuffer[100];
-    jsonString.toCharArray(msgBuffer, 100);
+    
+    // [Updated] ใช้ snprintf แทน String concat เพื่อประหยัด RAM และเสถียรกว่า
+    char msgBuffer[64];
+    snprintf(msgBuffer, sizeof(msgBuffer), "{\"temp\":%.1f,\"humi\":%.1f}", temperature, humidity);
+    
     client.publish("sensor/TempHumi", msgBuffer);
-    Serial.print("Published SHT30: "); // คืนค่า Debug
+    Serial.print("Published SHT30: "); 
     Serial.println(msgBuffer);
   } else {
-    Serial.println("Error: Can't read SHT30 sensor!"); // คืนค่า Debug
+    Serial.println("Error: Can't read SHT30 sensor!"); 
   }
 }
 
@@ -125,41 +137,39 @@ void mqttPending(){
   delay(2000);
 }
 
-// === [กู้คืน] Debug Message WiFi ===
 void setup_wifi() {
   delay(10);
-  Serial.print("\n[WiFi] Connecting to: "); // คืนค่า
-  Serial.println(ssid);                     // คืนค่า
+  Serial.print("\n[WiFi] Connecting to: "); 
+  Serial.println(ssid);                     
 
   WiFi.begin(ssid, pass);
 
   while (WiFi.status() != WL_CONNECTED) {
     ledStandby();
     delay(500); 
-    Serial.print("."); // คืนค่า (จุดไข่ปลา)
+    Serial.print("."); 
   }
   
-  Serial.println("\nWiFi Connected! :]");   // คืนค่า
-  Serial.print("IP address: ");             // คืนค่า
-  Serial.println(WiFi.localIP());           // คืนค่า
+  Serial.println("\nWiFi Connected! :]");   
+  Serial.print("IP address: ");             
+  Serial.println(WiFi.localIP());           
   digitalWrite(led, HIGH);
 }
 
-// === [กู้คืน] Debug Message MQTT ===
 void reconnect() {
   while (!client.connected()) {
-    Serial.print("Attempting MQTT connection..."); // คืนค่า
+    Serial.print("Attempting MQTT connection..."); 
     String clientId = "ESP32Client-" + String(random(0xffff), HEX);
     
     if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
-      Serial.println("connected");  // คืนค่า
+      Serial.println("connected");  
       digitalWrite(led, HIGH);
-      client.subscribe(topic_light); 
-      Serial.println("Subscribed to: test/light"); // คืนค่า
+      client.subscribe("test/light"); // แก้ให้ตรงกับตัวแปร topic ที่ใช้จริง
+      Serial.println("Subscribed to: test/light"); 
     } else {
-      Serial.print("failed, rc=");  // คืนค่า
-      Serial.print(client.state()); // คืนค่า
-      Serial.println(" try again in 5 seconds"); // คืนค่า
+      Serial.print("failed, rc=");  
+      Serial.print(client.state()); 
+      Serial.println(" try again in 5 seconds"); 
       mqttPending();
       delay(5000);
     }
@@ -174,32 +184,15 @@ void switchPush() {
     if (reading != buttonState) {
       buttonState = reading;
       if (buttonState == LOW) {
-        // Toggle
-        lightState = !lightState;
-        digitalWrite(light, lightState);
-        
-        if (lightState == HIGH) {
-           delay(100);
-           if (isLightReallyOn()) {
-             Serial.println("Button ON: Success");
-             sendLightStatus("1");
-           } else {
-             Serial.println("Button ON: Failed");
-             digitalWrite(light, LOW);
-             lightState = LOW;
-             sendLightStatus("0");
-           }
-        } else {
-           Serial.println("Button OFF");
-           sendLightStatus("0");
-        }
+        // [Updated] เรียกใช้ฟังก์ชันกลาง Toggle
+        Serial.println("Button Pressed -> Toggling Light");
+        controlLight(!lightState);
       }
     }
   }
   lastButtonState = reading;
 }
 
-// ฟังก์ชันเฝ้าระวังหลอดขาด (ทำงานตลอดเวลา)
 void monitorLightHealth() {
   if (lightState == HIGH) {
     if (!isLightReallyOn()) {
@@ -222,15 +215,15 @@ void setup() {
   pinMode(feedbackPin, INPUT);
   pinMode(switchPin, INPUT_PULLUP);
 
-  Serial.println("\nStarting System..."); // คืนค่า
+  Serial.println("\nStarting System..."); 
   ledStart(led, 2, 250);
   delay(3000);
 
   Wire.begin();
   if (!sht30.begin()) {
-    Serial.println("Can't find SHT30 sensor!"); // คืนค่า
+    Serial.println("Can't find SHT30 sensor!"); 
   } else {
-    Serial.println("SHT30 Connected! :]\n");      // คืนค่า
+    Serial.println("SHT30 Connected! :]\n");      
   }
 
   setup_wifi();
@@ -240,7 +233,7 @@ void setup() {
 
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi Disconnected! Reconnecting..."); // เพิ่มให้ด้วย
+    Serial.println("WiFi Disconnected! Reconnecting..."); 
     setup_wifi();
   }
   
