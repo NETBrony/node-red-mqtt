@@ -4,7 +4,7 @@
 char ssid[] = "@ Capsule Office";
 char pass[] = "pJoeInwOnlyFan";
 
-const char* mqtt_server = "192.168.5.153";
+const char* mqtt_server = "192.168.5.249";
 const int   mqtt_port   = 1883;
 const char* mqtt_user   = "netbrony";
 const char* mqtt_pass   = "Net_112233";
