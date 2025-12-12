@@ -109,17 +109,25 @@ void callback(char *topic, byte *payload, unsigned int length)
   String message = "";
   for (int i = 0; i < length; i++)
     message += (char)payload[i];
+    
   Serial.print("Message arrived [");
   Serial.print(topic);
   Serial.print("]: ");
   Serial.println(message);
 
-  if (String(topic) == "test/light")
+  // ✅ แก้ไข 1: เช็ค Topic ให้ตรงกับ React App
+  if (String(topic) == "api/control") 
   {
-    if (message == "1")
-      controlLight(true);
-    else if (message == "0")
+    // ✅ แก้ไข 2: เรียกใช้ฟังก์ชัน controlLight แทน digitalWrite
+    // เพื่อให้มันไปคุม Pin 19 และเช็ค Feedback Pin 34 ด้วย
+    if (message == "1") {
+      Serial.println("Command from App: ON");
+      controlLight(true); 
+    } 
+    else if (message == "0") {
+      Serial.println("Command from App: OFF");
       controlLight(false);
+    }
   }
 }
 
@@ -213,21 +221,19 @@ void reconnect()
       Serial.println("connected");
       digitalWrite(led, HIGH);
 
-      client.subscribe("test/light");
+      // ✅ แก้ไข 3: Subscribe หัวข้อ "api/control" (สำคัญมาก! ไม่งั้นไม่ได้ยินคำสั่ง)
+      client.subscribe("api/control"); 
 
-      if (lightState == HIGH)
-        sendLightStatus("1");
-      else
-        sendLightStatus("0");
+      // ส่งสถานะปัจจุบันกลับไปอัพเดตแอปทันทีที่ต่อติด
+      if (lightState == HIGH) sendLightStatus("1");
+      else sendLightStatus("0");
     }
     else
     {
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
-
-      mqttPending(); // เรียกใช้ไฟกระพริบรอ MQTT
-      // delay(5000); // ตัด delay ออกเพราะใน mqttPending มี delay 2 วิแล้ว (หรือจะใส่เพิ่มก็ได้ถ้าอยากรอนานขึ้น)
+      mqttPending(); 
     }
   }
 }
