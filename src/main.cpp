@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <PubSubClient.h>
+#include <WiFiClientSecure.h>
 #include <WiFi.h>
 #include <Wire.h>
 #include <SHT31.h>
@@ -31,7 +32,7 @@ int lastButtonState = HIGH;
 unsigned long lastDebounceTime = 0;
 unsigned long debounceDelay = 50;
 
-WiFiClient espClient;
+WiFiClientSecure espClient; 
 PubSubClient client(espClient);
 
 // ฟังก์ชันเช็คกระแส (Low-side Sensing)
@@ -108,17 +109,25 @@ void callback(char *topic, byte *payload, unsigned int length)
   String message = "";
   for (int i = 0; i < length; i++)
     message += (char)payload[i];
+    
   Serial.print("Message arrived [");
   Serial.print(topic);
   Serial.print("]: ");
   Serial.println(message);
 
-  if (String(topic) == "test/light")
+  // ✅ แก้ไข 1: เช็ค Topic ให้ตรงกับ React App
+  if (String(topic) == "api/control") 
   {
-    if (message == "1")
-      controlLight(true);
-    else if (message == "0")
+    // ✅ แก้ไข 2: เรียกใช้ฟังก์ชัน controlLight แทน digitalWrite
+    // เพื่อให้มันไปคุม Pin 19 และเช็ค Feedback Pin 34 ด้วย
+    if (message == "1") {
+      Serial.println("Command from App: ON");
+      controlLight(true); 
+    } 
+    else if (message == "0") {
+      Serial.println("Command from App: OFF");
       controlLight(false);
+    }
   }
 }
 
@@ -212,21 +221,19 @@ void reconnect()
       Serial.println("connected");
       digitalWrite(led, HIGH);
 
-      client.subscribe("test/light");
+      // ✅ แก้ไข 3: Subscribe หัวข้อ "api/control" (สำคัญมาก! ไม่งั้นไม่ได้ยินคำสั่ง)
+      client.subscribe("api/control"); 
 
-      if (lightState == HIGH)
-        sendLightStatus("1");
-      else
-        sendLightStatus("0");
+      // ส่งสถานะปัจจุบันกลับไปอัพเดตแอปทันทีที่ต่อติด
+      if (lightState == HIGH) sendLightStatus("1");
+      else sendLightStatus("0");
     }
     else
     {
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
-
-      mqttPending(); // เรียกใช้ไฟกระพริบรอ MQTT
-      // delay(5000); // ตัด delay ออกเพราะใน mqttPending มี delay 2 วิแล้ว (หรือจะใส่เพิ่มก็ได้ถ้าอยากรอนานขึ้น)
+      mqttPending(); 
     }
   }
 }
@@ -274,6 +281,7 @@ void setup()
   Serial.begin(115200);
   delay(100);
 
+  // กำหนดโหมดของขา Pin ต่างๆ
   pinMode(led, OUTPUT);
   pinMode(light, OUTPUT);
   pinMode(feedbackPin, INPUT);
@@ -283,6 +291,7 @@ void setup()
   ledStart(led, 2, 250); // ไฟกระพริบเริ่มระบบ
   delay(2000);
 
+  // เริ่มต้นการทำงานของ Sensor SHT30
   Wire.begin();
   if (!sht30.begin())
   {
@@ -293,9 +302,22 @@ void setup()
     Serial.println("SHT30 Connected.");
   }
 
+  // เชื่อมต่อ WiFi
   setup_wifi();
+
+  // ================================================================
+  // [จุดสำคัญที่เพิ่มเข้ามา] แก้ปัญหา connect failed rc=-2
+  // เป็นการบอก ESP32 ว่า "เชื่อมต่อแบบ SSL นะ แต่ไม่ต้องตรวจใบรับรอง"
+  // ================================================================
+  espClient.setInsecure(); 
+
+  // ตั้งค่า MQTT Server และ Callback
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
+
+  // [แนะนำเสริม] เพิ่มขนาด Buffer ให้ใหญ่ขึ้น
+  // เพราะ HiveMQ Cloud บางทีส่ง Token หรือ URL ยาวๆ มา Buffer เดิมอาจจะไม่พอ
+  client.setBufferSize(512); 
 }
 
 void loop()
