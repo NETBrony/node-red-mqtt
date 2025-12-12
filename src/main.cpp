@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <PubSubClient.h>
+#include <WiFiClientSecure.h>
 #include <WiFi.h>
 #include <Wire.h>
 #include <SHT31.h>
@@ -31,7 +32,7 @@ int lastButtonState = HIGH;
 unsigned long lastDebounceTime = 0;
 unsigned long debounceDelay = 50;
 
-WiFiClient espClient;
+WiFiClientSecure espClient; 
 PubSubClient client(espClient);
 
 // ฟังก์ชันเช็คกระแส (Low-side Sensing)
@@ -274,6 +275,7 @@ void setup()
   Serial.begin(115200);
   delay(100);
 
+  // กำหนดโหมดของขา Pin ต่างๆ
   pinMode(led, OUTPUT);
   pinMode(light, OUTPUT);
   pinMode(feedbackPin, INPUT);
@@ -283,6 +285,7 @@ void setup()
   ledStart(led, 2, 250); // ไฟกระพริบเริ่มระบบ
   delay(2000);
 
+  // เริ่มต้นการทำงานของ Sensor SHT30
   Wire.begin();
   if (!sht30.begin())
   {
@@ -293,9 +296,22 @@ void setup()
     Serial.println("SHT30 Connected.");
   }
 
+  // เชื่อมต่อ WiFi
   setup_wifi();
+
+  // ================================================================
+  // [จุดสำคัญที่เพิ่มเข้ามา] แก้ปัญหา connect failed rc=-2
+  // เป็นการบอก ESP32 ว่า "เชื่อมต่อแบบ SSL นะ แต่ไม่ต้องตรวจใบรับรอง"
+  // ================================================================
+  espClient.setInsecure(); 
+
+  // ตั้งค่า MQTT Server และ Callback
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
+
+  // [แนะนำเสริม] เพิ่มขนาด Buffer ให้ใหญ่ขึ้น
+  // เพราะ HiveMQ Cloud บางทีส่ง Token หรือ URL ยาวๆ มา Buffer เดิมอาจจะไม่พอ
+  client.setBufferSize(512); 
 }
 
 void loop()
