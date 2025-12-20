@@ -14,5 +14,6 @@ const char* mqtt_pass   = "Net_112233";
 const char* topic_TempHumi     = "sensor/TempHumi";
 const char* topic_light        = "test/light";
 const char* topic_light_status = "sensor/light_status";
+const char* topic_pump_log     = "status/pump";
 
 #endif
