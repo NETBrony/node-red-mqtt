@@ -60,12 +60,27 @@ bool isLightReallyOn() {
   return false;
 }
 
+// -------------------------------------------------------------
+// 🔥 EDIT: แก้ไขฟังก์ชันนี้ให้ส่งเข้า status/pump ด้วย
+// -------------------------------------------------------------
 void sendLightStatus(String status) {
   if (!client.connected()) return;
-  client.publish("sensor/light_status", status.c_str(), true);
+  
+  // 1. ส่ง Topic เดิม (สำหรับ App/Dashboard) -> ส่ง "1" หรือ "0"
+  client.publish(topic_light_status, status.c_str(), true);
+  
+  // 2. 🔥 NEW: ส่ง Topic ใหม่ (สำหรับ Google Sheet Log) -> ส่ง "ON" หรือ "OFF"
+  // แปลงค่าจาก "1"/"0" เป็น "ON"/"OFF" เพื่อให้อ่านง่ายใน Log
+  String logPayload = (status == "1") ? "ON" : "OFF";
+  client.publish(topic_pump_log, logPayload.c_str(), false); 
+
+  // Serial Monitor เดิม (ห้ามลบ)
   Serial.print("   >> [MQTT SEND] Light Status: ");
   Serial.println(status);
+  Serial.print("   >> [LOG SEND] Pump Log: "); // เพิ่ม Debug ให้ดูว่าส่ง Log แล้ว
+  Serial.println(logPayload);
 }
+// -------------------------------------------------------------
 
 void controlLight(bool turnOn) {
   Serial.println("\n--------------------------------");
@@ -119,8 +134,11 @@ void readSensor() {
     snprintf(msgBuffer, sizeof(msgBuffer), "{\"temp\":%.1f,\"humi\":%.1f}", temperature, humidity);
     client.publish("sensor/TempHumi", msgBuffer);
     Serial.print("🌡️ [SENSOR] Updated: "); Serial.println(msgBuffer);
+    
+    // อัปเดตสถานะปั๊มตลอดเวลา (Heartbeat Status)
     if (lightState == HIGH) sendLightStatus("1");
     else sendLightStatus("0");
+    
   } else {
     Serial.println("❌ [ERROR] SHT30 Read Failed!");
   }
