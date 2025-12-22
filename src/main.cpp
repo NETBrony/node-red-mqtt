@@ -1,15 +1,18 @@
 #include <Arduino.h>
+#include <WiFi.h>
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
-#include <WiFi.h>
 #include <Wire.h>
 #include <SHT31.h>
-#include "secret.h" 
+#include "secret.h"
+#include "wifi-connect.h"  // ✅ เรียกใช้ Wifi Manager ที่เราสร้างไว้
 
 // ==========================================
 // CONFIGURATION & PINS
 // ==========================================
-#define led 2           // LED สถานะ (Onboard)
+// ⚠️ เปลี่ยนเป็น int เพื่อให้ wifi.h มองเห็น (extern)
+int led = 2;            // LED สถานะ (Onboard)
+
 #define light 19        // Relay / Magnetic Contactor
 #define switchPin 17    // สวิตช์มือ (Manual)
 #define feedbackPin 34  // ขาเช็คกระแส/แรงดัน (Feedback)
@@ -42,7 +45,7 @@ WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
 // ==========================================
-// ✅ [RESTORED] LED FUNCTIONS
+// LED FUNCTIONS
 // ==========================================
 
 // 1. ไฟกระพริบตอนเริ่มระบบ
@@ -55,7 +58,7 @@ void ledStart(int pin, int times, int speed) {
   }
 }
 
-// 2. ไฟกระพริบรอ WiFi (Standby)
+// 2. ไฟกระพริบรอ WiFi (Standby) - ใช้ร่วมกับ wifi.h
 void ledStandby() {
   digitalWrite(led, HIGH);
   delay(delay_ms);
@@ -88,7 +91,8 @@ bool isLightReallyOn() {
 // ==========================================
 void sendLightStatus(String status) {
   if (!client.connected()) return;
-  client.publish("sensor/light_status", status.c_str(), true);
+  // ใช้ topic จาก secret.h จะดีกว่า Hardcode
+  client.publish(topic_light_status, status.c_str(), true);
   Serial.print(">> [MQTT SEND] Light Status: ");
   Serial.println(status);
 }
@@ -160,7 +164,8 @@ void readSensor() {
     char msgBuffer[64];
     snprintf(msgBuffer, sizeof(msgBuffer), "{\"temp\":%.1f,\"humi\":%.1f}", temperature, humidity);
     
-    client.publish("sensor/TempHumi", msgBuffer);
+    // ใช้ topic จาก secret.h
+    client.publish(topic_TempHumi, msgBuffer);
     Serial.print("🌡️ [SENSOR] Updated: ");
     Serial.println(msgBuffer);
 
@@ -173,32 +178,14 @@ void readSensor() {
 }
 
 // ==========================================
-// WIFI & MQTT CONNECTION
+// MQTT RECONNECT
 // ==========================================
-void setup_wifi() {
-  delay(10);
-  Serial.println();
-  Serial.print(">> [WiFi] Connecting to: ");
-  Serial.println(ssid);
-
-  WiFi.begin(ssid, pass);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    // ✅ เรียกใช้ไฟกระพริบรอ WiFi
-    ledStandby(); 
-    Serial.print(".");
-  }
-
-  Serial.println("\n✅ [WiFi] Connected!");
-  Serial.print(">> [WiFi] IP Address: ");
-  Serial.println(WiFi.localIP());
-  
-  // ต่อติดแล้วให้ไฟติดค้างไว้ก่อน
-  digitalWrite(led, HIGH); 
-}
-
 void reconnect() {
   while (!client.connected()) {
+    
+    // Safety check: ถ้า WiFi หลุด ให้หลุดจาก Loop เพื่อไป Restart
+    if(WiFi.status() != WL_CONNECTED) return;
+
     Serial.print(">> [MQTT] Connecting to Broker...");
     String clientId = "ESP32-" + String(random(0xffff), HEX);
 
@@ -251,8 +238,12 @@ void setup() {
   if (sht30.begin()) Serial.println(">> [INIT] SHT30 Sensor: OK");
   else Serial.println("❌ [INIT] SHT30 Sensor: NOT FOUND");
 
-  setup_wifi();
-  
+  // ================================================
+  // 🚀 เปลี่ยนจาก setup_wifi() เป็น WiFiManager
+  // ================================================
+  setup_wifi_manager(); // เรียกฟังก์ชันจาก wifi.h
+
+  // ตั้งค่า MQTT
   espClient.setInsecure();
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
@@ -262,11 +253,18 @@ void setup() {
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) setup_wifi();
+  // 1. ตรวจสอบสถานะ WiFi (Watchdog)
+  if (WiFi.status() != WL_CONNECTED) {
+     Serial.println("⚠️ [WiFi] Lost Connection! Restarting in 3 seconds...");
+     delay(3000);
+     ESP.restart(); // รีสตาร์ทระบบเพื่อให้ WiFiManager ทำงานใหม่ (เสถียรกว่าการพยายามต่อเอง)
+  }
+
+  // 2. ตรวจสอบ MQTT
   if (!client.connected()) reconnect();
   client.loop();
 
-  // 1. Manual Switch
+  // 3. Manual Switch
   int reading = digitalRead(switchPin);
   if (reading != lastButtonState) lastDebounceTime = millis();
   
@@ -281,14 +279,14 @@ void loop() {
   }
   lastButtonState = reading;
 
-  // 2. Sensor Loop
+  // 4. Sensor Loop
   unsigned long currentMillis = millis();
   if (currentMillis - previousMillis >= interval_sensor) {
     previousMillis = currentMillis;
     readSensor();
   }
 
-  // 3. Safety Watchdog
+  // 5. Safety Watchdog
   if (currentMillis - lastLightCheck >= lightCheckInterval) {
     lastLightCheck = currentMillis;
     if (lightState == HIGH) {
