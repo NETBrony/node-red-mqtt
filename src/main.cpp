@@ -6,82 +6,96 @@
 #include <SHT31.h>
 #include "secret.h" 
 
-#define led 2           
-#define light 19        
-#define switchPin 17    
-#define feedbackPin 34  
+// ==========================================
+// CONFIGURATION & PINS
+// ==========================================
+#define led 2           // LED สถานะ (Onboard)
+#define light 19        // Relay / Magnetic Contactor
+#define switchPin 17    // สวิตช์มือ (Manual)
+#define feedbackPin 34  // ขาเช็คกระแส/แรงดัน (Feedback)
 
-const int delay_ms = 500; 
-
-// ⚡ แก้ไข: ส่งข้อมูลถี่ขึ้น (ทุก 2 วินาที) เพื่อให้ Heartbeat ไว
-const unsigned long interval_sensor = 2000;  
+const int delay_ms = 500; // เวลาหน่วงไฟกระพริบ Standby
+const unsigned long interval_sensor = 10000; 
 const unsigned long lightCheckInterval = 100; 
 
+// ==========================================
+// VARIABLES
+// ==========================================
 unsigned long previousMillis = 0;
 unsigned long lastLightCheck = 0;
 
+// SHT31 Sensor
 #define SHT31_ADDRESS 0x44
 SHT31 sht30(SHT31_ADDRESS);
 float temperature = 0.0;
 float humidity = 0.0;
 
+// System State
 int lightState = LOW;
 int buttonState;
 int lastButtonState = HIGH;
 unsigned long lastDebounceTime = 0;
 unsigned long debounceDelay = 50;
 
+// Network
 WiFiClientSecure espClient; 
 PubSubClient client(espClient);
 
+// ==========================================
+// ✅ [RESTORED] LED FUNCTIONS
+// ==========================================
+
+// 1. ไฟกระพริบตอนเริ่มระบบ
 void ledStart(int pin, int times, int speed) {
   for (int i = 0; i < times; i++) {
-    digitalWrite(led, HIGH); delay(speed);
-    digitalWrite(led, LOW); delay(speed);
+    digitalWrite(led, HIGH);
+    delay(speed);
+    digitalWrite(led, LOW);
+    delay(speed);
   }
 }
 
+// 2. ไฟกระพริบรอ WiFi (Standby)
 void ledStandby() {
-  digitalWrite(led, HIGH); delay(delay_ms);
-  digitalWrite(led, LOW); delay(delay_ms);
+  digitalWrite(led, HIGH);
+  delay(delay_ms);
+  digitalWrite(led, LOW);
+  delay(delay_ms);
 }
 
+// 3. ไฟกระพริบรอ MQTT (Pending)
 void mqttPending() {
   for (int i = 0; i < 2; i++) {
-    digitalWrite(led, HIGH); delay(100);
-    digitalWrite(led, LOW); delay(100);
+    digitalWrite(led, HIGH);
+    delay(100);
+    digitalWrite(led, LOW);
+    delay(100);
   }
-  delay(2000); 
+  delay(2000); // เว้นจังหวะ 2 วินาที
 }
 
+// ==========================================
+// HARDWARE CHECK (Feedback Logic)
+// ==========================================
 bool isLightReallyOn() {
   int sensorValue = analogRead(feedbackPin);
-  if (sensorValue > 1000) return true; 
+  if (sensorValue > 1000) return true;
   return false;
 }
 
-// -------------------------------------------------------------
-// 🔥 EDIT: แก้ไขฟังก์ชันนี้ให้ส่งเข้า status/pump ด้วย
-// -------------------------------------------------------------
+// ==========================================
+// SEND STATUS TO REACT
+// ==========================================
 void sendLightStatus(String status) {
   if (!client.connected()) return;
-  
-  // 1. ส่ง Topic เดิม (สำหรับ App/Dashboard) -> ส่ง "1" หรือ "0"
-  client.publish(topic_light_status, status.c_str(), true);
-  
-  // 2. 🔥 NEW: ส่ง Topic ใหม่ (สำหรับ Google Sheet Log) -> ส่ง "ON" หรือ "OFF"
-  // แปลงค่าจาก "1"/"0" เป็น "ON"/"OFF" เพื่อให้อ่านง่ายใน Log
-  String logPayload = (status == "1") ? "ON" : "OFF";
-  client.publish(topic_pump_log, logPayload.c_str(), false); 
-
-  // Serial Monitor เดิม (ห้ามลบ)
-  Serial.print("   >> [MQTT SEND] Light Status: ");
+  client.publish("sensor/light_status", status.c_str(), true);
+  Serial.print(">> [MQTT SEND] Light Status: ");
   Serial.println(status);
-  Serial.print("   >> [LOG SEND] Pump Log: "); // เพิ่ม Debug ให้ดูว่าส่ง Log แล้ว
-  Serial.println(logPayload);
 }
-// -------------------------------------------------------------
 
+// ==========================================
+// CONTROL LOGIC
+// ==========================================
 void controlLight(bool turnOn) {
   Serial.println("\n--------------------------------");
   if (turnOn) {
@@ -89,26 +103,27 @@ void controlLight(bool turnOn) {
     digitalWrite(light, HIGH);
     lightState = HIGH;
 
-    delay(500); 
+    delay(100); // รอไฟวิ่ง 100ms
 
     int val = analogRead(feedbackPin);
-    Serial.print("   >> [CHECK] Feedback Value: ");
+    Serial.print(">> [CHECK] Feedback Value: ");
     Serial.println(val);
 
     if (val > 1000) {
       Serial.println("✅ [SUCCESS] Load Detected. System Normal.");
       sendLightStatus("1");
-      client.publish("sensor/error", "OK", true);
     } else {
       Serial.println("🚨 [FAILURE] No Load Detected! (TRIP ACTIVATED)");
-      Serial.println("   >> [SAFETY] Cutting Power immediately.");
+      Serial.println(">> [SAFETY] Cutting Power immediately.");
+      
       digitalWrite(light, LOW);
       lightState = LOW;
+      
       sendLightStatus("0");
-      client.publish("sensor/error", "PUMP ERROR", true);
+      client.publish("sensor/error", "TRIP: Wire Broken/No Load", false);
     }
   } else {
-    Serial.println(">> [ACTION] Turning OFF");
+    Serial.println(">> [ACTION] Turning OFF (Manual/Command)");
     digitalWrite(light, LOW);
     lightState = LOW;
     sendLightStatus("0");
@@ -116,40 +131,69 @@ void controlLight(bool turnOn) {
   Serial.println("--------------------------------\n");
 }
 
+// ==========================================
+// MQTT CALLBACK
+// ==========================================
 void callback(char *topic, byte *payload, unsigned int length) {
   String message = "";
   for (int i = 0; i < length; i++) message += (char)payload[i];
-  Serial.print("\n📩 [MQTT RECV] Topic: "); Serial.print(topic); Serial.print(" | Payload: "); Serial.println(message);
+
+  Serial.print("\n📩 [MQTT RECV] Topic: ");
+  Serial.print(topic);
+  Serial.print(" | Payload: ");
+  Serial.println(message);
+
   if (String(topic) == "api/control") {
     if (message == "1") controlLight(true); 
     else if (message == "0") controlLight(false);
   }
 }
 
+// ==========================================
+// SENSOR READING
+// ==========================================
 void readSensor() {
   if (sht30.read()) {
     temperature = sht30.getTemperature();
     humidity = sht30.getHumidity();
+
     char msgBuffer[64];
     snprintf(msgBuffer, sizeof(msgBuffer), "{\"temp\":%.1f,\"humi\":%.1f}", temperature, humidity);
-    client.publish("sensor/TempHumi", msgBuffer);
-    Serial.print("🌡️ [SENSOR] Updated: "); Serial.println(msgBuffer);
     
-    // อัปเดตสถานะปั๊มตลอดเวลา (Heartbeat Status)
+    client.publish("sensor/TempHumi", msgBuffer);
+    Serial.print("🌡️ [SENSOR] Updated: ");
+    Serial.println(msgBuffer);
+
     if (lightState == HIGH) sendLightStatus("1");
     else sendLightStatus("0");
-    
+
   } else {
     Serial.println("❌ [ERROR] SHT30 Read Failed!");
   }
 }
 
+// ==========================================
+// WIFI & MQTT CONNECTION
+// ==========================================
 void setup_wifi() {
   delay(10);
-  Serial.println(); Serial.print(">> [WiFi] Connecting to: "); Serial.println(ssid);
+  Serial.println();
+  Serial.print(">> [WiFi] Connecting to: ");
+  Serial.println(ssid);
+
   WiFi.begin(ssid, pass);
-  while (WiFi.status() != WL_CONNECTED) { ledStandby(); Serial.print("."); }
-  Serial.println("\n✅ [WiFi] Connected!"); Serial.print("   >> IP Address: "); Serial.println(WiFi.localIP());
+
+  while (WiFi.status() != WL_CONNECTED) {
+    // ✅ เรียกใช้ไฟกระพริบรอ WiFi
+    ledStandby(); 
+    Serial.print(".");
+  }
+
+  Serial.println("\n✅ [WiFi] Connected!");
+  Serial.print(">> [WiFi] IP Address: ");
+  Serial.println(WiFi.localIP());
+  
+  // ต่อติดแล้วให้ไฟติดค้างไว้ก่อน
   digitalWrite(led, HIGH); 
 }
 
@@ -157,37 +201,63 @@ void reconnect() {
   while (!client.connected()) {
     Serial.print(">> [MQTT] Connecting to Broker...");
     String clientId = "ESP32-" + String(random(0xffff), HEX);
+
     if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass, "sensor/connection", 0, true, "OFFLINE")) {
       Serial.println(" Connected! ✅");
-      digitalWrite(led, HIGH);
+      
+      // ✅ ต่อติดแล้วให้ไฟติดค้าง
+      digitalWrite(led, HIGH); 
+
       client.publish("sensor/connection", "ONLINE", true);
-      Serial.println("   >> [LWT] Status sent: ONLINE");
+      Serial.println(">> [LWT] Status sent: ONLINE");
+
       client.subscribe("api/control");
-      Serial.println("   >> [SUB] Subscribed to 'api/control'");
+      Serial.println(">> [SUB] Subscribed to 'api/control'");
+      
       if (lightState == HIGH) sendLightStatus("1");
       else sendLightStatus("0");
+
     } else {
-      Serial.print(" Failed (rc="); Serial.print(client.state()); Serial.println(") Try again...");
+      Serial.print(" Failed (rc=");
+      Serial.print(client.state());
+      Serial.println(") Try again...");
+      
+      // ✅ เรียกใช้ไฟกระพริบรอ MQTT (Pending)
       mqttPending(); 
     }
   }
 }
 
+// ==========================================
+// SETUP & LOOP
+// ==========================================
 void setup() {
   Serial.begin(115200);
-  pinMode(led, OUTPUT); pinMode(light, OUTPUT); pinMode(feedbackPin, INPUT); pinMode(switchPin, INPUT_PULLUP);
+  
+  pinMode(led, OUTPUT);
+  pinMode(light, OUTPUT);
+  pinMode(feedbackPin, INPUT);
+  pinMode(switchPin, INPUT_PULLUP);
+
   Serial.println("\n\n=================================");
   Serial.println("   SMART FARM PRO - SYSTEM START");
   Serial.println("=================================");
-  ledStart(led, 2, 250); delay(1000);
+  
+  // ✅ เรียกใช้ไฟกระพริบเริ่มระบบ
+  ledStart(led, 2, 250); 
+  delay(1000);
+  
   Wire.begin();
   if (sht30.begin()) Serial.println(">> [INIT] SHT30 Sensor: OK");
   else Serial.println("❌ [INIT] SHT30 Sensor: NOT FOUND");
+
   setup_wifi();
+  
   espClient.setInsecure();
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
   client.setBufferSize(512);
+  
   Serial.println(">> [INIT] System Ready. Waiting for commands...\n");
 }
 
@@ -196,8 +266,10 @@ void loop() {
   if (!client.connected()) reconnect();
   client.loop();
 
+  // 1. Manual Switch
   int reading = digitalRead(switchPin);
   if (reading != lastButtonState) lastDebounceTime = millis();
+  
   if ((millis() - lastDebounceTime) > debounceDelay) {
     if (reading != buttonState) {
       buttonState = reading;
@@ -209,20 +281,23 @@ void loop() {
   }
   lastButtonState = reading;
 
+  // 2. Sensor Loop
   unsigned long currentMillis = millis();
   if (currentMillis - previousMillis >= interval_sensor) {
     previousMillis = currentMillis;
     readSensor();
   }
 
+  // 3. Safety Watchdog
   if (currentMillis - lastLightCheck >= lightCheckInterval) {
     lastLightCheck = currentMillis;
     if (lightState == HIGH) {
       if (!isLightReallyOn()) {
         Serial.println("\n🚨 [WATCHDOG] Critical Failure! Current lost during operation.");
-        digitalWrite(light, LOW); lightState = LOW;
+        digitalWrite(light, LOW);
+        lightState = LOW;
         sendLightStatus("0");
-        client.publish("sensor/error", "PUMP ERROR", true);
+        client.publish("sensor/error", "TRIP: Watchdog Cut", false);
       }
     }
   }
