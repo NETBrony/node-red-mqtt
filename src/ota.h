@@ -6,7 +6,7 @@
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include <PubSubClient.h>
-#include "secret.h"  // ✅ เรียกใช้ตัวแปร Topic
+#include "secret.h"
 
 extern PubSubClient client; 
 

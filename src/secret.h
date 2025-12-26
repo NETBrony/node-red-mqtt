@@ -10,10 +10,10 @@ const char* topic_TempHumi     = "sensor/TempHumi";
 const char* topic_light        = "test/light";
 const char* topic_light_status = "sensor/light_status";
 const char* topic_pump_log     = "status/pump";
+const char* topic_error        = "sensor/error";
 
 const char* topic_ota_update    = "ota/update";
 const char* topic_ota_status    = "ota/status";
 const char* topic_ota_progress  = "ota/progress";
-const char* topic_error         = "sensor/error";
 
 #endif

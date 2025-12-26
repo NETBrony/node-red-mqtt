@@ -152,8 +152,18 @@ void callback(char *topic, byte *payload, unsigned int length) {
     else if (message == "0") controlLight(false);
   }
 
-  else if (String(topic) == "ota/update") {
-     runOTA(message); // เรียกฟังก์ชันจาก ota.h
+  else if (String(topic) == topic_ota_update) {
+    Serial.println("🚀 [OTA] Starting Firmware Update...");
+    
+    // Safety: Force Turn OFF
+    controlLight(false);
+    
+    // Feedback to Dashboard
+    client.publish("sensor/error", "System Updating...", false);
+    delay(100); 
+
+    // Run OTA
+    runOTA(message);
   }
 }
 
