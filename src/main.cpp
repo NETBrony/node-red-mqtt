@@ -1,11 +1,11 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <PubSubClient.h>
 #include <WiFiClientSecure.h>
 #include <Wire.h>
 #include <SHT31.h>
 #include "secret.h"
-#include "wifi-connect.h"  // ✅ เรียกใช้ Wifi Manager ที่เราสร้างไว้
+#include "wifi-connect.h"
+#include "ota.h"
 
 // ==========================================
 // CONFIGURATION & PINS
@@ -150,6 +150,10 @@ void callback(char *topic, byte *payload, unsigned int length) {
   if (String(topic) == "api/control") {
     if (message == "1") controlLight(true); 
     else if (message == "0") controlLight(false);
+  }
+
+  else if (String(topic) == "ota/update") {
+     runOTA(message); // เรียกฟังก์ชันจาก ota.h
   }
 }
 
