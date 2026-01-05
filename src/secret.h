@@ -6,14 +6,13 @@ const int   mqtt_port   = 8883;
 const char* mqtt_user   = "netbrony";
 const char* mqtt_pass   = "Net_112233";
 
+// --- Topics ---
 const char* topic_TempHumi     = "sensor/TempHumi";
-const char* topic_light        = "test/light";
 const char* topic_light_status = "sensor/light_status";
-const char* topic_pump_log     = "status/pump";
 const char* topic_error        = "sensor/error";
 
-const char* topic_ota_update    = "ota/update";
-const char* topic_ota_status    = "ota/status";
-const char* topic_ota_progress  = "ota/progress";
+// 🔥 [เพิ่ม] Topic สำหรับรับคำสั่งจาก React
+const char* topic_control      = "api/control"; 
+const char* topic_standby      = "smartfarm/system/standby";
 
 #endif
