@@ -56,7 +56,7 @@ unsigned long prevMillisOverload = 0;
 const long intervalSensor = 2000;
 const long intervalOled = 500; 
 const long intervalOverload = 100; 
-const unsigned long RESTART_INTERVAL = 30 * 60 * 1000;
+const unsigned long RESTART_INTERVAL = 30 * 60 * 1000; // รีสตาร์ททุก 30 นาทีเพื่อเคลียร์แรม
 
 int currentMenuPage = 0; 
 int lastBtnState = HIGH;
@@ -72,31 +72,27 @@ const long  gmtOffset_sec = 7 * 3600;
 const int   daylightOffset_sec = 0;
 
 // ==========================================
-// 🎨 BOOT UI FUNCTION (ปรับปรุงใหม่)
+// 🎨 BOOT UI FUNCTION
 // ==========================================
-// ฟังก์ชันนี้จะวาด Logo ค้างไว้ แล้วเปลี่ยนข้อความด้านล่าง
 void updateBootStatus(String statusMsg) {
     display.clearDisplay(); 
 
-    // 1. วาด Logo (ขยับลงมาที่ Y=5 เพื่อความสวยงาม)
-    // Logo สูง 35px, วางที่ 5, จบที่ 40. เหลือที่ด้านล่าง 24px
+    // Logo (Y=5)
     display.drawBitmap(0, 5, ruts_logo, 128, 35, SSD1306_WHITE);
 
-    // 2. วาดข้อความสถานะ (Status Text)
+    // Status Text
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     
-    // คำนวณจัดกึ่งกลางข้อความ
-    int16_t x1, y1;
-    uint16_t w, h;
+    int16_t x1, y1; uint16_t w, h;
     display.getTextBounds(statusMsg, 0, 0, &x1, &y1, &w, &h);
     int x_text = (SCREEN_WIDTH - w) / 2;
-    int y_text = 50; // วางไว้ใต้ Logo (Logo จบที่ ~40)
+    int y_text = 50; 
 
     display.setCursor(x_text, y_text);
     display.print(statusMsg);
 
-    // 3. วาดเส้น Loading bar เล็กๆ ด้านล่างสุด (Optional)
+    // Loading Line
     static int barWidth = 0;
     barWidth += 20; 
     if(barWidth > 128) barWidth = 0;
@@ -118,14 +114,26 @@ void autoMaintenance() {
     }
 }
 
+// ✅ ฟังก์ชันเช็ค Overload แบบใหม่ (Amplitude Check)
+// ถ้าส่วนต่างคลื่นสูงกว่า 500 แสดงว่ามีไฟ 220V เข้ามา (Trip)
 bool checkOverload() {
   int maxVal = 0;
+  int minVal = 4095;
   unsigned long startSample = millis();
+  
   while(millis() - startSample < 20) { 
     int val = analogRead(PIN_ZMPT);
     if(val > maxVal) maxVal = val;
+    if(val < minVal) minVal = val;
   }
-  if (maxVal > 2000) return true; 
+
+  int amplitude = maxVal - minVal;
+
+  // Threshold 500: ถ้ามากกว่านี้แสดงว่าเป็นคลื่น AC 220V
+  // ถ้าน้อยกว่านี้ (เช่น 0-100) คือ Noise หรือไม่มีไฟ
+  if (amplitude > 500) { 
+    return true; 
+  }
   return false;
 }
 
@@ -133,7 +141,6 @@ void syncTimeNetwork() {
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   struct tm timeinfo;
   
-  // ลอง Sync 5 ครั้ง (พร้อมอัปเดตหน้าจอ)
   for(int i=0; i<5; i++){
     updateBootStatus("Syncing Time (" + String(i+1) + "/5)");
     if (getLocalTime(&timeinfo)) {
@@ -150,7 +157,7 @@ void syncTimeNetwork() {
 }
 
 // ==========================================
-// 🎨 MAIN UI Functions
+// 🎨 MAIN UI Functions (พิกัดแก้ไขแล้ว)
 // ==========================================
 void drawHeader() {
   DateTime now = rtc.now();
@@ -172,8 +179,8 @@ void drawHeader() {
 }
 
 void drawFooter() {
-  // ✅ ขยับเส้นลงไปที่ Y=56 (เกือบสุดขอบ)
-  display.drawLine(0, 54, SCREEN_WIDTH, 54, SSD1306_WHITE);
+  // ✅ เส้นอยู่ที่ Y=52 (ไม่จม)
+  display.drawLine(0, 52, SCREEN_WIDTH, 52, SSD1306_WHITE);
   
   String statusMsg = "PUMP: " + String(pumpState ? "ON" : "OFF");
   if (isOverloadTrip) statusMsg = "! TRIP !";
@@ -182,8 +189,8 @@ void drawFooter() {
   int16_t x1, y1; uint16_t w, h;
   display.getTextBounds(statusMsg, 0, 0, &x1, &y1, &w, &h);
   
-  // ✅ ขยับตัวหนังสือลงไปที่ Y=57 (ต่ำสุดเท่าที่จะทำได้โดยไม่ตกขอบ)
-  display.setCursor((SCREEN_WIDTH - w) / 2, 57);
+  // ✅ ตัวหนังสืออยู่ที่ Y=54 (ไม่จม)
+  display.setCursor((SCREEN_WIDTH - w) / 2, 54);
   display.print(statusMsg);
 }
 
@@ -193,30 +200,28 @@ void updateDisplay() {
   drawFooter();
 
   if (isOverloadTrip) {
+      // หน้าจอแจ้งเตือน Overload
       display.setTextSize(2);
       int16_t x1, y1; uint16_t w, h;
       String msg = "OVERLOAD";
       display.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
-      display.setCursor((SCREEN_WIDTH - w) / 2, 22); // ขยับลง
+      display.setCursor((SCREEN_WIDTH - w) / 2, 20);
       display.print(msg);
 
       display.setTextSize(1);
       msg = "Check Mag/Pump";
       display.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
-      display.setCursor((SCREEN_WIDTH - w) / 2, 42); // ขยับลง
+      display.setCursor((SCREEN_WIDTH - w) / 2, 40);
       display.print(msg);
   } else {
-    // ------------------------------------
-    // PAGE 0: TEMPERATURE
-    // ------------------------------------
+    // --- PAGE 0: TEMPERATURE ---
     if (currentMenuPage == 0) { 
       display.setTextSize(1);
       String title = "TEMPERATURE";
       
       int16_t x1, y1; uint16_t w, h;
       display.getTextBounds(title, 0, 0, &x1, &y1, &w, &h);
-      // ✅ ขยับหัวข้อลงมาที่ Y=18 (เดิม 16)
-      display.setCursor((SCREEN_WIDTH - w) / 2, 16); 
+      display.setCursor((SCREEN_WIDTH - w) / 2, 14); // Y=14
       display.print(title);
       
       display.setTextSize(3);
@@ -224,55 +229,49 @@ void updateDisplay() {
       display.getTextBounds(tempStr, 0, 0, &x1, &y1, &w, &h);
       int startX = (SCREEN_WIDTH - (w + 24)) / 2; 
       
-      // ✅ ขยับตัวเลขลงมาที่ Y=30 (เดิม 28) ให้ดูอยู่กึ่งกลางพื้นที่ว่างมากขึ้น
-      display.setCursor(startX, 30); 
+      display.setCursor(startX, 25); // Y=25 (กึ่งกลาง)
       display.print(tempStr);
       
       display.setTextSize(1); 
-      display.setCursor(display.getCursorX() + 4, 30);
+      display.setCursor(display.getCursorX() + 4, 25);
       display.write(248); 
       display.setTextSize(2);
       display.print("C");
     } 
-    // ------------------------------------
-    // PAGE 1: HUMIDITY
-    // ------------------------------------
+    // --- PAGE 1: HUMIDITY ---
     else if (currentMenuPage == 1) { 
       display.setTextSize(1);
       String title = "HUMIDITY";
       int16_t x1, y1; uint16_t w, h;
       display.getTextBounds(title, 0, 0, &x1, &y1, &w, &h);
       
-      display.setCursor((SCREEN_WIDTH - w) / 2, 16); // ✅ Y=18
+      display.setCursor((SCREEN_WIDTH - w) / 2, 14); // Y=14
       display.print(title);
       
       display.setTextSize(3);
       String humStr = String(humidity, 1) + "%";
       display.getTextBounds(humStr, 0, 0, &x1, &y1, &w, &h);
       
-      display.setCursor((SCREEN_WIDTH - w) / 2, 30); // ✅ Y=30
+      display.setCursor((SCREEN_WIDTH - w) / 2, 25); // Y=25
       display.print(humStr);
     }
-    // ------------------------------------
-    // PAGE 2: WIFI INFO
-    // ------------------------------------
+    // --- PAGE 2: WIFI INFO ---
     else { 
-      // ขยับทุกบรรทัดลงมาอีกนิด ให้กระจายเต็มจอ
       display.setTextSize(1);
-      display.setCursor(0, 14); // เดิม 15
+      display.setCursor(0, 15); 
       display.println("WiFi STATUS:");
       
-      display.setCursor(0, 25); // เดิม 26
+      display.setCursor(0, 25);
       display.print("SSID: ");
       String ssid = WiFi.SSID();
       if(ssid.length() > 10) ssid = ssid.substring(0, 10) + ".."; 
       display.print(ssid);
       
-      display.setCursor(0, 35); // เดิม 36
+      display.setCursor(0, 35);
       display.print("IP: ");
       display.print(WiFi.localIP());
       
-      display.setCursor(0, 45); // เดิม 46
+      display.setCursor(0, 45);
       display.print("Sig: ");
       display.print(WiFi.RSSI());
       display.print(" dBm");
@@ -317,7 +316,7 @@ void reconnect() {
 }
 
 // ==========================================
-// 🚀 SETUP (The Masterpiece)
+// 🚀 SETUP
 // ==========================================
 void setup() {
   Serial.begin(115200);
@@ -333,38 +332,35 @@ void setup() {
     for(;;);
   }
   
-  display.cp437(true); // ใช้ Code page 437 เพื่อแสดงสัญลักษณ์พิเศษ
+  display.cp437(true);
 
   // --------------------------------------------------
-  // STEP 1: System Booting
+  // ✅ STEP 0: Show Logo Only (3 Seconds)
   // --------------------------------------------------
+  display.clearDisplay();
+  display.drawBitmap(0, 10, ruts_logo, 128, 35, SSD1306_WHITE); 
+  display.display();
+  delay(3000); 
+
+  // STEP 1: Booting
   updateBootStatus("System Booting...");
-  delay(1000); // โชว์ Logo + Booting แป๊บนึง
+  delay(1000);
 
   Wire.begin(RTC_SDA, RTC_SCL);
   if (!rtc.begin()) Serial.println("❌ RTC Error");
   Wire1.begin(SHT_SDA, SHT_SCL);
   if (!sht30.begin()) Serial.println("❌ SHT30 Error");
 
-  // --------------------------------------------------
-  // STEP 2: WiFi Connection
-  // --------------------------------------------------
+  // STEP 2: WiFi
   updateBootStatus("Connecting WiFi...");
-  
-  setup_wifi_manager(); // ฟังก์ชันนี้จะ Block จนกว่าจะต่อติด
-  
+  setup_wifi_manager(); 
   updateBootStatus("WiFi Connected!");
   delay(1000);
 
-  // --------------------------------------------------
-  // STEP 3: Time Sync
-  // --------------------------------------------------
-  // ในฟังก์ชันนี้ผมใส่ updateBootStatus ไว้ข้างในแล้ว เพื่อให้เห็น Progress
+  // STEP 3: Time
   syncTimeNetwork(); 
 
-  // --------------------------------------------------
-  // STEP 4: MQTT Connection
-  // --------------------------------------------------
+  // STEP 4: MQTT
   espClient.setInsecure(); 
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
@@ -392,9 +388,6 @@ void setup() {
       delay(500);
   }
   
-  // --------------------------------------------------
-  // STEP 5: Ready -> Enter Loop
-  // --------------------------------------------------
   updateBootStatus("System Ready");
   delay(500);
 
@@ -408,29 +401,42 @@ void setup() {
 void loop() {
   unsigned long currentMillis = millis();
 
+  // 1. Network Check
   if (WiFi.status() != WL_CONNECTED) ESP.restart(); 
   if (!client.connected()) reconnect();
   client.loop();
 
+  // 2. Maintenance
   autoMaintenance(); 
 
-  // --- OVERLOAD CHECK ---
+  // 3. 🔴 OVERLOAD LOGIC (เจอไฟ 220V = TRIP)
   if (currentMillis - prevMillisOverload >= intervalOverload) {
       prevMillisOverload = currentMillis;
-      if (checkOverload()) {
-        if (!isOverloadTrip) { 
-          isOverloadTrip = true;
-          controlPump(false); 
-        }
-      } else {
-        if (isOverloadTrip) {
-            isOverloadTrip = false;
-            sendPumpStatus(false, false); 
-        }
+      
+      bool voltageDetected = checkOverload(); // เช็คไฟจาก ZMPT
+
+      if (voltageDetected) {
+          // ถ้ามีไฟ 220V เข้ามา และสถานะยังไม่ Trip -> สั่ง Trip เลย
+          if (!isOverloadTrip) {
+             isOverloadTrip = true;
+             controlPump(false); // ตัดปั๊ม
+             Serial.println("🚨 OVERLOAD TRIPPED!"); 
+             sendPumpStatus(false, true); // แจ้ง MQTT LOCKED
+             updateDisplay(); 
+          }
+      } 
+      else {
+          // ถ้าไม่มีไฟ (เงียบ) และสถานะค้าง Trip อยู่ -> ปลดล็อค
+          if (isOverloadTrip) {
+             isOverloadTrip = false;
+             Serial.println("✅ Overload Cleared.");
+             sendPumpStatus(false, false); // แจ้ง MQTT ปกติ
+             updateDisplay(); 
+          }
       }
   }
 
-  // --- SENSOR READ ---
+  // 4. Sensor Reading
   if (currentMillis - prevMillisSensor >= intervalSensor) {
     prevMillisSensor = currentMillis;
     if (sht30.read()) {
@@ -442,7 +448,7 @@ void loop() {
     }
   }
 
-  // --- BUTTON & MENU ---
+  // 5. Button (เปลี่ยนหน้าเมนู)
   int reading = digitalRead(PIN_MENU_BTN);
   if (reading != lastBtnState) lastDebounceTime = currentMillis;
   
@@ -451,15 +457,18 @@ void loop() {
       if (reading != buttonState) {
           buttonState = reading;
           if (buttonState == LOW) { 
-              currentMenuPage++;
-              if (currentMenuPage > 2) currentMenuPage = 0;
-              updateDisplay(); 
+              // เปลี่ยนหน้าได้เฉพาะตอนไม่ Trip (หรือจะให้เปลี่ยนได้ตลอดก็ได้ตามสะดวก)
+              if (!isOverloadTrip) {
+                  currentMenuPage++;
+                  if (currentMenuPage > 2) currentMenuPage = 0;
+                  updateDisplay(); 
+              }
           }
       }
   }
   lastBtnState = reading;
 
-  // --- DISPLAY REFRESH ---
+  // 6. Display Refresh
   if (currentMillis - prevMillisOled >= intervalOled) {
     prevMillisOled = currentMillis;
     updateDisplay();
