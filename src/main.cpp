@@ -1,46 +1,31 @@
 #include <Arduino.h>
-#include <SPI.h>
 #include <Wire.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <RTClib.h>     
 #include <SHT31.h>      
 #include "secret.h"     
-#include "icon.h" // ✅ เรียกใช้ Logo จากไฟล์นี้
+
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 
 // ==========================================
 // ⚙️ PIN DEFINITIONS
 // ==========================================
-#define OLED_MOSI   23
-#define OLED_CLK    18
-#define OLED_DC     16
-#define OLED_CS     5
-#define OLED_RESET  17
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
+#define SHT_SDA         21  
+#define SHT_SCL         22  
+#define PIN_LED_PUMP    19  // Output: คุมไฟ/ปั๊ม
+#define PIN_MANUAL_SW   17  // Input: ปุ่มกด
+#define PIN_ZMPT        34  // Input: ตรวจสอบสถานะ (Feedback)
 
-#define RTC_SDA     21
-#define RTC_SCL     22
-#define SHT_SDA     27
-#define SHT_SCL     14
-
-#define PIN_ZMPT        34  
-#define PIN_MENU_BTN    33  
-#define PIN_RELAY_PUMP  25
-#define PIN_RELAY_AUX   26
+// Logic LED: Active HIGH
+#define PUMP_ON   HIGH  
+#define PUMP_OFF  LOW   
 
 // ==========================================
-// 🛠️ OBJECT INSTANTIATION
+// 🛠️ OBJECTS
 // ==========================================
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, 
-  OLED_MOSI, OLED_CLK, OLED_DC, OLED_RESET, OLED_CS);
-
-RTC_DS3231 rtc;
-SHT31 sht30(0x44, &Wire1); 
-
+SHT31 sht30(0x44); 
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
@@ -50,234 +35,80 @@ PubSubClient client(espClient);
 // 📊 VARIABLES
 // ==========================================
 unsigned long prevMillisSensor = 0;
-unsigned long prevMillisOled = 0;
-unsigned long prevMillisOverload = 0;
+unsigned long prevMillisFault = 0;
+
+// WiFi Interval
+unsigned long previousMillisWiFi = 0;
+const long intervalWiFi = 30000; 
 
 const long intervalSensor = 2000;
-const long intervalOled = 500; 
-const long intervalOverload = 100; 
-const unsigned long RESTART_INTERVAL = 30 * 60 * 1000; // รีสตาร์ททุก 30 นาทีเพื่อเคลียร์แรม
+const long intervalFaultCheck = 100; 
 
-int currentMenuPage = 0; 
+// Fault Config (Overload + Open Circuit)
+unsigned long faultStartTime = 0;
+const long FAULT_CONFIRM_TIME = 2000; // ต้องผิดปกตินาน 2 วินาทีถึงจะตัด
+bool isFaultPending = false; 
+
+// Thresholds
+const int ZMPT_OVERLOAD_THRESHOLD = 3000; // ค่าสูงเกิน = Overload (ไฟกระชาก)
+const int OPEN_CIRCUIT_THRESHOLD = 500;   // ค่าต่ำกว่านี้ตอนเปิดปั๊ม = สายขาด (Open Circuit)
+
+// Startup Delay
+unsigned long systemReadyTime = 0;
+const unsigned long STARTUP_DELAY_MS = 5000; 
+
+// Button
 int lastBtnState = HIGH;
 unsigned long lastDebounceTime = 0;
 
 float temperature = 0.0;
 float humidity = 0.0;
-bool isOverloadTrip = false; 
+bool isTrip = false;      // เปลี่ยนชื่อจาก isOverloadTrip ให้สื่อความหมายรวมๆ
 bool pumpState = false;
 
-const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 7 * 3600; 
-const int   daylightOffset_sec = 0;
-
 // ==========================================
-// 🎨 BOOT UI FUNCTION
+// 🔄 FAULT CHECK FUNCTION (หัวใจสำคัญ)
 // ==========================================
-void updateBootStatus(String statusMsg) {
-    display.clearDisplay(); 
-
-    // Logo (Y=5)
-    display.drawBitmap(0, 5, ruts_logo, 128, 35, SSD1306_WHITE);
-
-    // Status Text
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    
-    int16_t x1, y1; uint16_t w, h;
-    display.getTextBounds(statusMsg, 0, 0, &x1, &y1, &w, &h);
-    int x_text = (SCREEN_WIDTH - w) / 2;
-    int y_text = 50; 
-
-    display.setCursor(x_text, y_text);
-    display.print(statusMsg);
-
-    // Loading Line
-    static int barWidth = 0;
-    barWidth += 20; 
-    if(barWidth > 128) barWidth = 0;
-    display.drawFastHLine(0, 62, barWidth, SSD1306_WHITE);
-
-    display.display();
-}
-
-// ==========================================
-// 🔄 HELPER FUNCTIONS
-// ==========================================
-void autoMaintenance() {
-    if (millis() > RESTART_INTERVAL) {
-        if (pumpState == false) {
-            updateBootStatus("Maintenance...");
-            delay(1000); 
-            ESP.restart(); 
-        }
-    }
-}
-
-// ✅ ฟังก์ชันเช็ค Overload แบบใหม่ (Amplitude Check)
-// ถ้าส่วนต่างคลื่นสูงกว่า 500 แสดงว่ามีไฟ 220V เข้ามา (Trip)
-bool checkOverload() {
+bool checkSystemFault() {
   int maxVal = 0;
   int minVal = 4095;
+  long sumVal = 0;
+  int samples = 0;
   unsigned long startSample = millis();
   
+  // เก็บตัวอย่าง 20ms
   while(millis() - startSample < 20) { 
     int val = analogRead(PIN_ZMPT);
     if(val > maxVal) maxVal = val;
     if(val < minVal) minVal = val;
+    sumVal += val;
+    samples++;
   }
+  
+  int amplitude = maxVal - minVal; // สำหรับเช็ค ZMPT (AC Signal)
+  int avgVal = sumVal / samples;   // สำหรับเช็ค LED (DC Signal)
 
-  int amplitude = maxVal - minVal;
+  // Debug: ดูค่าผ่าน Serial เพื่อจูน
+  // Serial.printf("Amp: %d, Avg: %d, PumpState: %d\n", amplitude, avgVal, pumpState);
 
-  // Threshold 500: ถ้ามากกว่านี้แสดงว่าเป็นคลื่น AC 220V
-  // ถ้าน้อยกว่านี้ (เช่น 0-100) คือ Noise หรือไม่มีไฟ
-  if (amplitude > 500) { 
+  // 🚩 กรณี 1: Overload (กระแสสูงเกิน)
+  // ถ้าใช้ ZMPT วัดไฟ AC ค่า Amplitude จะสูง
+  if (amplitude > ZMPT_OVERLOAD_THRESHOLD) { 
+    Serial.println("⚠️ Fault: High Current Detected!");
     return true; 
   }
+
+  // 🚩 กรณี 2: Open Circuit (สั่งเปิดแต่ไฟไม่มา)
+  // เช็คเฉพาะตอนที่สั่งเปิดปั๊ม (pumpState == true)
+  if (pumpState == true) {
+      // ถ้าสั่งเปิดแล้ว แต่ค่าเฉลี่ยที่อ่านได้ต่ำมาก (ใกล้ 0)
+      if (avgVal < OPEN_CIRCUIT_THRESHOLD) {
+          Serial.println("⚠️ Fault: Open Circuit / LED Broken!");
+          return true;
+      }
+  }
+
   return false;
-}
-
-void syncTimeNetwork() {
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  struct tm timeinfo;
-  
-  for(int i=0; i<5; i++){
-    updateBootStatus("Syncing Time (" + String(i+1) + "/5)");
-    if (getLocalTime(&timeinfo)) {
-      rtc.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, 
-                          timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
-      updateBootStatus("Time Synced! OK");
-      delay(500);
-      return;
-    }
-    delay(500); 
-  }
-  updateBootStatus("Time Sync Failed");
-  delay(1000);
-}
-
-// ==========================================
-// 🎨 MAIN UI Functions (พิกัดแก้ไขแล้ว)
-// ==========================================
-void drawHeader() {
-  DateTime now = rtc.now();
-  display.setTextColor(SSD1306_WHITE);
-  display.setTextSize(1);
-  
-  char timeStr[6];
-  sprintf(timeStr, "%02d:%02d", now.hour(), now.minute());
-  display.setCursor(0, 0); 
-  display.print(timeStr);
-
-  String mqttStatus = client.connected() ? "MQTT:ON" : "MQTT:--";
-  int16_t x1, y1; uint16_t w, h;
-  display.getTextBounds(mqttStatus, 0, 0, &x1, &y1, &w, &h);
-  display.setCursor(SCREEN_WIDTH - w, 0); 
-  display.print(mqttStatus);
-  
-  display.drawLine(0, 10, SCREEN_WIDTH, 10, SSD1306_WHITE);
-}
-
-void drawFooter() {
-  // ✅ เส้นอยู่ที่ Y=52 (ไม่จม)
-  display.drawLine(0, 52, SCREEN_WIDTH, 52, SSD1306_WHITE);
-  
-  String statusMsg = "PUMP: " + String(pumpState ? "ON" : "OFF");
-  if (isOverloadTrip) statusMsg = "! TRIP !";
-  
-  display.setTextSize(1);
-  int16_t x1, y1; uint16_t w, h;
-  display.getTextBounds(statusMsg, 0, 0, &x1, &y1, &w, &h);
-  
-  // ✅ ตัวหนังสืออยู่ที่ Y=54 (ไม่จม)
-  display.setCursor((SCREEN_WIDTH - w) / 2, 54);
-  display.print(statusMsg);
-}
-
-void updateDisplay() {
-  display.clearDisplay();
-  drawHeader();
-  drawFooter();
-
-  if (isOverloadTrip) {
-      // หน้าจอแจ้งเตือน Overload
-      display.setTextSize(2);
-      int16_t x1, y1; uint16_t w, h;
-      String msg = "OVERLOAD";
-      display.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
-      display.setCursor((SCREEN_WIDTH - w) / 2, 20);
-      display.print(msg);
-
-      display.setTextSize(1);
-      msg = "Check Mag/Pump";
-      display.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
-      display.setCursor((SCREEN_WIDTH - w) / 2, 40);
-      display.print(msg);
-  } else {
-    // --- PAGE 0: TEMPERATURE ---
-    if (currentMenuPage == 0) { 
-      display.setTextSize(1);
-      String title = "TEMPERATURE";
-      
-      int16_t x1, y1; uint16_t w, h;
-      display.getTextBounds(title, 0, 0, &x1, &y1, &w, &h);
-      display.setCursor((SCREEN_WIDTH - w) / 2, 14); // Y=14
-      display.print(title);
-      
-      display.setTextSize(3);
-      String tempStr = String(temperature, 1);
-      display.getTextBounds(tempStr, 0, 0, &x1, &y1, &w, &h);
-      int startX = (SCREEN_WIDTH - (w + 24)) / 2; 
-      
-      display.setCursor(startX, 25); // Y=25 (กึ่งกลาง)
-      display.print(tempStr);
-      
-      display.setTextSize(1); 
-      display.setCursor(display.getCursorX() + 4, 25);
-      display.write(248); 
-      display.setTextSize(2);
-      display.print("C");
-    } 
-    // --- PAGE 1: HUMIDITY ---
-    else if (currentMenuPage == 1) { 
-      display.setTextSize(1);
-      String title = "HUMIDITY";
-      int16_t x1, y1; uint16_t w, h;
-      display.getTextBounds(title, 0, 0, &x1, &y1, &w, &h);
-      
-      display.setCursor((SCREEN_WIDTH - w) / 2, 14); // Y=14
-      display.print(title);
-      
-      display.setTextSize(3);
-      String humStr = String(humidity, 1) + "%";
-      display.getTextBounds(humStr, 0, 0, &x1, &y1, &w, &h);
-      
-      display.setCursor((SCREEN_WIDTH - w) / 2, 25); // Y=25
-      display.print(humStr);
-    }
-    // --- PAGE 2: WIFI INFO ---
-    else { 
-      display.setTextSize(1);
-      display.setCursor(0, 15); 
-      display.println("WiFi STATUS:");
-      
-      display.setCursor(0, 25);
-      display.print("SSID: ");
-      String ssid = WiFi.SSID();
-      if(ssid.length() > 10) ssid = ssid.substring(0, 10) + ".."; 
-      display.print(ssid);
-      
-      display.setCursor(0, 35);
-      display.print("IP: ");
-      display.print(WiFi.localIP());
-      
-      display.setCursor(0, 45);
-      display.print("Sig: ");
-      display.print(WiFi.RSSI());
-      display.print(" dBm");
-    }
-  }
-  display.display();
 }
 
 // ==========================================
@@ -285,14 +116,22 @@ void updateDisplay() {
 // ==========================================
 void sendPumpStatus(bool state, bool isLockout) {
   if (!client.connected()) return;
-  String statusJson = isLockout ? "LOCKED" : (state ? "1" : "0");
-  if(isLockout) client.publish(topic_error, "Pump Overload Tripped!", false);
-  client.publish(topic_light_status, statusJson.c_str(), true);
+  
+  if(isLockout) {
+    client.publish(topic_error, "System Tripped! (Overload/Open)", false);
+    client.publish(topic_light_status, "LOCKED", true);
+  } else {
+    client.publish(topic_light_status, state ? "1" : "0", true);
+  }
 }
 
 void controlPump(bool turnOn) {
-  if (isOverloadTrip) { sendPumpStatus(false, true); return; }
-  digitalWrite(PIN_RELAY_PUMP, turnOn ? HIGH : LOW);
+  if (isTrip) { 
+    sendPumpStatus(false, true); 
+    return; 
+  }
+
+  digitalWrite(PIN_LED_PUMP, turnOn ? PUMP_ON : PUMP_OFF);
   pumpState = turnOn;
   sendPumpStatus(pumpState, false);
 }
@@ -300,7 +139,10 @@ void controlPump(bool turnOn) {
 void callback(char *topic, byte *payload, unsigned int length) {
   String message = "";
   for (int i = 0; i < length; i++) message += (char)payload[i];
+  Serial.print("📩 [MQTT] "); Serial.print(topic); Serial.print(": "); Serial.println(message);
+  
   if (String(topic) == topic_control) {
+    message.trim();
     if (message == "1") controlPump(true);
     else if (message == "0") controlPump(false);
   }
@@ -308,9 +150,10 @@ void callback(char *topic, byte *payload, unsigned int length) {
 
 void reconnect() {
   if (!client.connected()) {
-    if (client.connect(("ESP32-" + String(random(0xffff), HEX)).c_str(), mqtt_user, mqtt_pass)) {
+    String clientId = "ESP32-Dev-" + String(random(0xffff), HEX);
+    if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
       client.subscribe(topic_control);
-      sendPumpStatus(pumpState, isOverloadTrip); 
+      sendPumpStatus(pumpState, isTrip); 
     }
   }
 }
@@ -319,80 +162,34 @@ void reconnect() {
 // 🚀 SETUP
 // ==========================================
 void setup() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); 
   Serial.begin(115200);
-  
-  pinMode(PIN_MENU_BTN, INPUT_PULLUP); 
-  pinMode(PIN_RELAY_PUMP, OUTPUT);
-  pinMode(PIN_RELAY_AUX, OUTPUT);
-  pinMode(PIN_ZMPT, INPUT); 
-  digitalWrite(PIN_RELAY_PUMP, LOW); 
 
-  if(!display.begin(SSD1306_SWITCHCAPVCC)) {
-    Serial.println(F("SSD1306 failed"));
-    for(;;);
+  // 1. Config Pins
+  pinMode(PIN_MANUAL_SW, INPUT_PULLUP); 
+  pinMode(PIN_LED_PUMP, OUTPUT);
+  pinMode(PIN_ZMPT, INPUT); // ⚠️ อย่าลืมต่อ R 10k Pull-down ที่ขานี้ลง GND
+
+  digitalWrite(PIN_LED_PUMP, PUMP_OFF); 
+
+  // 2. Init Sensors
+  Wire.begin(SHT_SDA, SHT_SCL); 
+  if (!sht30.begin()) {   
+    Serial.println("❌ SHT30 Error");
   }
-  
-  display.cp437(true);
 
-  // --------------------------------------------------
-  // ✅ STEP 0: Show Logo Only (3 Seconds)
-  // --------------------------------------------------
-  display.clearDisplay();
-  display.drawBitmap(0, 10, ruts_logo, 128, 35, SSD1306_WHITE); 
-  display.display();
-  delay(3000); 
-
-  // STEP 1: Booting
-  updateBootStatus("System Booting...");
-  delay(1000);
-
-  Wire.begin(RTC_SDA, RTC_SCL);
-  if (!rtc.begin()) Serial.println("❌ RTC Error");
-  Wire1.begin(SHT_SDA, SHT_SCL);
-  if (!sht30.begin()) Serial.println("❌ SHT30 Error");
-
-  // STEP 2: WiFi
-  updateBootStatus("Connecting WiFi...");
+  // 3. Network
   setup_wifi_manager(); 
-  updateBootStatus("WiFi Connected!");
-  delay(1000);
 
-  // STEP 3: Time
-  syncTimeNetwork(); 
-
-  // STEP 4: MQTT
+  // 4. MQTT
   espClient.setInsecure(); 
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
   client.setKeepAlive(60);      
   client.setSocketTimeout(60);  
 
-  unsigned long startMqtt = millis();
-  while (!client.connected()) {
-      updateBootStatus("Connecting MQTT..."); 
-      
-      String clientId = "ESP32-" + String(random(0xffff), HEX);
-      if (client.connect(clientId.c_str(), mqtt_user, mqtt_pass)) {
-          updateBootStatus("MQTT Connected!");
-          delay(500);
-          client.subscribe(topic_control);
-          sendPumpStatus(pumpState, isOverloadTrip);
-      }
-      
-      if (client.connected()) break;
-      if (millis() - startMqtt > 10000) {
-          updateBootStatus("MQTT Skipped");
-          delay(1000);
-          break; 
-      }
-      delay(500);
-  }
-  
-  updateBootStatus("System Ready");
-  delay(500);
-
-  display.clearDisplay();
-  display.display();
+  systemReadyTime = millis() + STARTUP_DELAY_MS;
+  Serial.println("🚀 System Ready");
 }
 
 // ==========================================
@@ -402,41 +199,60 @@ void loop() {
   unsigned long currentMillis = millis();
 
   // 1. Network Check
-  if (WiFi.status() != WL_CONNECTED) ESP.restart(); 
-  if (!client.connected()) reconnect();
-  client.loop();
+  if (currentMillis - previousMillisWiFi >= intervalWiFi) {
+    previousMillisWiFi = currentMillis;
+    if (WiFi.status() != WL_CONNECTED) {
+      WiFi.disconnect(); 
+      WiFi.reconnect();
+    }
+  }
 
-  // 2. Maintenance
-  autoMaintenance(); 
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!client.connected()) reconnect();
+    client.loop();
+  }
 
-  // 3. 🔴 OVERLOAD LOGIC (เจอไฟ 220V = TRIP)
-  if (currentMillis - prevMillisOverload >= intervalOverload) {
-      prevMillisOverload = currentMillis;
-      
-      bool voltageDetected = checkOverload(); // เช็คไฟจาก ZMPT
+  // 2. Fault Logic (Overload + Open Circuit)
+  if (currentMillis - prevMillisFault >= intervalFaultCheck) {
+      prevMillisFault = currentMillis;
 
-      if (voltageDetected) {
-          // ถ้ามีไฟ 220V เข้ามา และสถานะยังไม่ Trip -> สั่ง Trip เลย
-          if (!isOverloadTrip) {
-             isOverloadTrip = true;
-             controlPump(false); // ตัดปั๊ม
-             Serial.println("🚨 OVERLOAD TRIPPED!"); 
-             sendPumpStatus(false, true); // แจ้ง MQTT LOCKED
-             updateDisplay(); 
-          }
-      } 
-      else {
-          // ถ้าไม่มีไฟ (เงียบ) และสถานะค้าง Trip อยู่ -> ปลดล็อค
-          if (isOverloadTrip) {
-             isOverloadTrip = false;
-             Serial.println("✅ Overload Cleared.");
-             sendPumpStatus(false, false); // แจ้ง MQTT ปกติ
-             updateDisplay(); 
+      if (millis() > systemReadyTime) { 
+          bool faultDetected = checkSystemFault(); 
+
+          if (faultDetected) {
+              if (!isTrip) {
+                  if (!isFaultPending) {
+                      isFaultPending = true;
+                      faultStartTime = currentMillis;
+                      Serial.println("⚠️ Fault Pending...");
+                  } else {
+                      // ถ้าผิดปกตินานเกิน 2 วินาที -> ตัดระบบ
+                      if (currentMillis - faultStartTime >= FAULT_CONFIRM_TIME) {
+                          isTrip = true;
+                          isFaultPending = false;
+                          controlPump(false); // Force OFF
+                          Serial.println("🚨 SYSTEM TRIPPED! Check Wiring/Load."); 
+                          sendPumpStatus(false, true); 
+                      }
+                  }
+              }
+          } else {
+              isFaultPending = false; 
+              // ถ้า Fault หายไป (เช่น เสียบสายคืน)
+              // ปกติระบบ Safety จะไม่ Auto Reset แต่ถ้าอยากให้ Reset เองได้
+              // ให้ uncomment บรรทัดล่างนี้ครับ
+              /*
+              if (isTrip) {
+                 isTrip = false;
+                 Serial.println("✅ Fault Cleared.");
+                 sendPumpStatus(false, false); 
+              }
+              */
           }
       }
   }
 
-  // 4. Sensor Reading
+  // 3. Sensor Reading
   if (currentMillis - prevMillisSensor >= intervalSensor) {
     prevMillisSensor = currentMillis;
     if (sht30.read()) {
@@ -448,8 +264,8 @@ void loop() {
     }
   }
 
-  // 5. Button (เปลี่ยนหน้าเมนู)
-  int reading = digitalRead(PIN_MENU_BTN);
+  // 4. Manual Switch (กดเพื่อเปิด/ปิด และ Reset Trip)
+  int reading = digitalRead(PIN_MANUAL_SW);
   if (reading != lastBtnState) lastDebounceTime = currentMillis;
   
   if ((currentMillis - lastDebounceTime) > 50) {
@@ -457,20 +273,17 @@ void loop() {
       if (reading != buttonState) {
           buttonState = reading;
           if (buttonState == LOW) { 
-              // เปลี่ยนหน้าได้เฉพาะตอนไม่ Trip (หรือจะให้เปลี่ยนได้ตลอดก็ได้ตามสะดวก)
-              if (!isOverloadTrip) {
-                  currentMenuPage++;
-                  if (currentMenuPage > 2) currentMenuPage = 0;
-                  updateDisplay(); 
+              // ถ้ากดปุ่มตอน Trip อยู่ ให้ Reset ระบบได้
+              if (isTrip) {
+                  isTrip = false;
+                  Serial.println("🔄 Manual Reset Trip");
+                  sendPumpStatus(false, false);
+              } else {
+                  // ถ้าปกติ ให้ Toggle เปิดปิด
+                  controlPump(!pumpState); 
               }
           }
       }
   }
   lastBtnState = reading;
-
-  // 6. Display Refresh
-  if (currentMillis - prevMillisOled >= intervalOled) {
-    prevMillisOled = currentMillis;
-    updateDisplay();
-  }
 }
